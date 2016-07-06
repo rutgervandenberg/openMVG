@@ -137,6 +137,78 @@ public:
 #include <cereal/archives/json.hpp>
 CEREAL_REGISTER_TYPE_WITH_NAME(AKAZE_OCV_Image_describer, "AKAZE_OCV_Image_describer");
 
+typedef Scalar_Regions<SIOPointFeature,float,64> SURF_OpenCV_Regions;
+class SURF_OCV_Image_describer : public Image_describer {
+public:
+  SURF_OCV_Image_describer() : Image_describer() { }
+
+
+  bool Set_configuration_preset(EDESCRIBER_PRESET preset) {
+    return false;
+  }
+
+  /**
+  @brief Detect regions on the image and compute their attributes (description)
+  @param image Image.
+  @param regions The detected regions and attributes (the caller must delete the allocated data)
+  @param mask 8-bit gray image for keypoint filtering (optional).
+     Non-zero values depict the region of interest.
+  */
+  bool Describe(const Image<unsigned char> &image,
+                std::unique_ptr<Regions> &regions,
+                const Image<unsigned char> *mask = nullptr) {
+    cv::Mat img;
+    cv::eigen2cv(image.GetMat(), img);
+
+    cv::Mat m_mask;
+    if (mask != nullptr) {
+      cv::eigen2cv(mask->GetMat(), m_mask);
+    }
+
+    std::vector<cv::KeyPoint> vec_keypoints;
+    cv::Mat m_desc;
+
+    cv::Ptr<cv::Feature2D> extractor = cv::xfeatures2d::SURF::create();
+    extractor->detectAndCompute(img, m_mask, vec_keypoints, m_desc);
+    if (!vec_keypoints.empty())
+    {
+      Allocate(regions);
+
+      // Build alias to cached data
+      SURF_OpenCV_Regions * regionsCasted = dynamic_cast<SURF_OpenCV_Regions*>(regions.get());
+      // reserve some memory for faster keypoint saving
+      regionsCasted->Features().reserve(vec_keypoints.size());
+      regionsCasted->Descriptors().reserve(vec_keypoints.size());
+
+      typedef Descriptor<float, 64> DescriptorT;
+      DescriptorT descriptor;
+      int cpt = 0;
+      for(std::vector< cv::KeyPoint >::const_iterator i_keypoint = vec_keypoints.begin();
+          i_keypoint != vec_keypoints.end(); ++i_keypoint, ++cpt){
+
+        SIOPointFeature feat((*i_keypoint).pt.x, (*i_keypoint).pt.y, (*i_keypoint).size, (*i_keypoint).angle);
+        regionsCasted->Features().push_back(feat);
+
+        memcpy(descriptor.data(),
+               m_desc.ptr<typename DescriptorT::bin_type>(cpt),
+               DescriptorT::static_size*sizeof(DescriptorT::bin_type));
+        regionsCasted->Descriptors().push_back(descriptor);
+      }
+    }
+    return true;
+  };
+
+  /// Allocate Regions type depending of the Image_describer
+  void Allocate(std::unique_ptr<Regions> &regions) const {
+    regions.reset(new SURF_OpenCV_Regions);
+  }
+
+  template<class Archive>
+  void serialize(Archive &ar) {
+  }
+};
+CEREAL_REGISTER_TYPE_WITH_NAME(SURF_OCV_Image_describer, "SURF_OPENCV_Image_describer");
+
 #ifdef USE_OCVSIFT
 ///
 //- Create an Image_describer interface that use and OpenCV extraction method
@@ -269,6 +341,7 @@ int main(int argc, char **argv)
       << "  (method to use to describe an image):\n"
       << "   AKAZE_OPENCV (default),\n"
       << "   SIFT_OPENCV: SIFT FROM OPENCV\n"
+      << "   SURF_OPENCV: SURF FROM OPENCV\n"
 #endif
       << std::endl;
 
@@ -330,24 +403,28 @@ int main(int argc, char **argv)
   }
   else
   {
-#ifdef USE_OCVSIFT
+
     if (sImage_Describer_Method == "AKAZE_OPENCV")
     {
       image_describer.reset(new AKAZE_OCV_Image_describer);
     }
+#ifdef USE_OCVSIFT
     else
     if (sImage_Describer_Method == "SIFT_OPENCV")
     {
       image_describer.reset(new SIFT_OPENCV_Image_describer());
+    }
+#endif
+    else
+    if (sImage_Describer_Method == "SURF_OPENCV")
+    {
+      image_describer.reset(new SURF_OCV_Image_describer());
     }
     else
     {
       std::cerr << "Unknown image describer method." << std::endl;
       return EXIT_FAILURE;
     }
-#else
-    image_describer.reset(new AKAZE_OCV_Image_describer);
-#endif
 
     // Export the used Image_describer and region type for:
     // - dynamic future regions computation and/or loading
